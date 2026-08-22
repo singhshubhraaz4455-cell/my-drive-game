@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Indian Road Racer</title>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#87cbea;font-family:Arial,sans-serif}
+canvas{display:block;width:100%;height:100%}
+#hud{position:fixed;top:15px;left:15px;right:15px;z-index:5;display:flex;justify-content:space-between;color:#fff;font-weight:bold;pointer-events:none}
+.panel{background:rgba(25,65,85,.75);padding:10px 14px;border-radius:8px;margin:3px;text-shadow:0 1px 2px #000}
+#left{display:flex;gap:5px}
+#overlay{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.65);display:flex;flex-direction:column;align-items:center;justify-content:center;color:white;text-align:center}
+#overlay.hide{display:none}
+button{padding:14px 28px;border:0;border-radius:10px;font-size:20px;font-weight:bold;cursor:pointer}
+#sound{position:fixed;top:15px;right:15px;z-index:8}
+h1{font-size:clamp(30px,6vw,60px);margin:10px}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div id="left">
+    <div class="panel">SCORE <span id="score">0</span></div>
+    <div class="panel">SPEED <span id="speed">50</span> KM/H</div>
+  </div>
+  <div class="panel">STREAK X<span id="streak">0</span></div>
+</div>
+<button id="sound" class="panel">🔊 SOUND</button>
+
+<div id="overlay">
+  <h1 id="title">INDIAN ROAD RACER</h1>
+  <p id="msg">WASD ya Arrow Keys se car chalao</p>
+  <button id="start">START GAME</button>
+</div>
+
+<script>
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+
+let W=0,H=0;
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;}
+window.addEventListener("resize",resize); resize();
+
+const keys={};
+document.addEventListener("keydown",e=>{
+  keys[e.key.toLowerCase()]=true;
+  if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(e.key.toLowerCase())) e.preventDefault();
+});
+document.addEventListener("keyup",e=>keys[e.key.toLowerCase()]=false);
+
+let audio=null, sound=true, engine=null, engineGain=null;
+
+function audioStart(){
+  if(!audio) audio=new (window.AudioContext||window.webkitAudioContext)();
+  if(audio.state==="suspended") audio.resume();
+  if(!engine){
+    engine=audio.createOscillator();
+    engineGain=audio.createGain();
+    engine.type="sawtooth";
+    engine.frequency.value=80;
+    engineGain.gain.value=.015;
+    engine.connect(engineGain);
+    engineGain.connect(audio.destination);
+    engine.start();
+  }
+}
+function beep(f=600,d=.08,v=.04){
+  if(!sound)return;
+  audioStart();
+  const o=audio.createOscillator(),g=audio.createGain();
+  o.frequency.value=f;o.type="sine";
+  g.gain.setValueAtTime(v,audio.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,audio.currentTime+d);
+  o.connect(g);g.connect(audio.destination);o.start();o.stop(audio.currentTime+d);
+}
+function crash(){
+  if(!sound)return;
+  audioStart();
+  const o=audio.createOscillator(),g=audio.createGain();
+  o.type="sawtooth";
+  o.frequency.setValueAtTime(180,audio.currentTime);
+  o.frequency.exponentialRampToValueAtTime(40,audio.currentTime+.4);
+  g.gain.setValueAtTime(.12,audio.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,audio.currentTime+.4);
+  o.connect(g);g.connect(audio.destination);o.start();o.stop(audio.currentTime+.4);
+}
+document.getElementById("sound").onclick=()=>{
+  sound=!sound;
+  document.getElementById("sound").textContent=sound?"🔊 SOUND":"🔇 MUTED";
+  if(sound){audioStart();beep(700,.1,.04)}
+  else if(engineGain) engineGain.gain.value=0;
+};
+
+let running=false,score=0,streak=0,speed=5,scroll=0,spawnTime=0,last=0;
+const player={x:0,y:0,w:46,h:78};
+let cars=[];
+
+function road(){
+  const w=Math.min(560,W*.58);
+  return {left:W/2-w/2,right:W/2+w/2,w:w};
+}
+function reset(){
+  const r=road();
+  player.x=W/2-player.w/2;
+  player.y=H-125;
+  score=0;streak=0;speed=5;scroll=0;spawnTime=0;cars=[];
+  updateHud();
+}
+function startGame(){
+  audioStart(); beep(520,.12,.05);
+  reset();running=true;
+  document.getElementById("overlay").classList.add("hide");
+  last=performance.now();
+  requestAnimationFrame(loop);
+}
+document.getElementById("start").onclick=startGame;
+
+function endGame(){
+  running=false;crash();
+  document.getElementById("title").textContent="GAME OVER";
+  document.getElementById("msg").textContent="Score: "+Math.floor(score);
+  document.getElementById("start").textContent="PLAY AGAIN";
+  document.getElementById("overlay").classList.remove("hide");
+}
+
+function update(dt){
+  const r=road(), move=7*dt/16;
+  if(keys.a||keys.arrowleft)player.x-=move;
+  if(keys.d||keys.arrowright)player.x+=move;
+  if(keys.w||keys.arrowup)player.y-=move*.7;
+  if(keys.s||keys.arrowdown)player.y+=move*.7;
+
+  player.x=Math.max(r.left+10,Math.min(r.right-player.w-10,player.x));
+  player.y=Math.max(20,Math.min(H-player.h-10,player.y));
+
+  scroll=(scroll+speed*dt/16)%65;
+  spawnTime-=dt;
+  if(spawnTime<=0){spawnCar();spawnTime=650+Math.random()*450;}
+
+  for(let i=cars.length-1;i>=0;i--){
+    const c=cars[i];
+    c.y+=c.speed*dt/16;
+
+    if(!c.passed && c.y>player.y+player.h){
+      c.passed=true;score+=10;streak++;beep(760,.06,.025);
+    }
+    if(collision(player,c)){endGame();return;}
+    if(c.y>H+100)cars.splice(i,1);
+  }
+
+  speed=Math.min(12,speed+dt*.00015);
+  score+=dt*.003;
+  if(engine && engineGain && sound){
+    engineGain.gain.value=.012;
+    engine.frequency.value=65+speed*12;
+  }
+  updateHud();
+}
+
+function spawnCar(){
+  const r=road();
+  const lanes=[r.left+r.w/6,r.left+r.w/2,r.left+r.w*5/6];
+  const x=lanes[Math.floor(Math.random()*lanes.length)]-23;
+  cars.push({x:x,y:-90,w:46,h:78,speed:speed*(.7+Math.random()*.35),passed:false,type:Math.floor(Math.random()*3)});
+}
+
+function collision(a,b){
+  return a.x+7<b.x+b.w-7 && a.x+a.w-7>b.x+7 &&
+         a.y+7<b.y+b.h-7 && a.y+a.h-7>b.y+7;
+}
+
+function updateHud(){
+  document.getElementById("score").textContent=Math.floor(score);
+  document.getElementById("speed").textContent=Math.floor(speed*10);
+  document.getElementById("streak").textContent=streak;
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  drawWorld();
+  drawRoad();
+  for(const c of cars)drawCar(c,false);
+  drawCar(player,true);
+}
+
+function drawWorld(){
+  ctx.fillStyle="#9ed5ef";ctx.fillRect(0,0,W,H*.34);
+  ctx.fillStyle="#72a653";ctx.fillRect(0,H*.34,W,H*.66);
+  for(let y=H*.36;y<H;y+=42){
+    ctx.fillStyle=(Math.floor(y/42)%2)?"#6da050":"#78ad5a";
+    ctx.fillRect(0,y,W,42);
+  }
+  const r=road();
+  for(let y=-80;y<H+120;y+=150){
+    const yy=y+(scroll*2)%150;
+    tree(r.left-55,yy,24);
+    tree(r.right+55,yy+70,28);
+  }
+}
+
+function tree(x,y,s){
+  ctx.fillStyle="#704522";ctx.fillRect(x-4,y+s*.35,8,s);
+  ctx.fillStyle="#2d7137";ctx.beginPath();ctx.arc(x,y,s,0,Math.PI*2);ctx.fill();
+}
+
+function drawRoad(){
+  const r=road();
+  ctx.fillStyle="#d8c37d";ctx.fillRect(r.left-14,0,14,H);ctx.fillRect(r.right,0,14,H);
+  ctx.fillStyle="#3f4347";ctx.fillRect(r.left,0,r.w,H);
+  ctx.strokeStyle="#fff8dd";ctx.lineWidth=4;ctx.setLineDash([30,35]);ctx.lineDashOffset=-scroll;
+  ctx.beginPath();ctx.moveTo(r.left+r.w/3,0);ctx.lineTo(r.left+r.w/3,H);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(r.left+r.w*2/3,0);ctx.lineTo(r.left+r.w*2/3,H);ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawCar(c,playerCar){
+  ctx.save();ctx.translate(c.x,c.y);
+  ctx.fillStyle="rgba(0,0,0,.3)";ctx.fillRect(4,6,c.w,c.h);
+  const colors=playerCar?"#d92828":["#2679b9","#e0a72a","#4c9b58"][c.type%3];
+  ctx.fillStyle=colors;round(0,0,c.w,c.h,8);ctx.fill();
+  ctx.fillStyle="#b9ddea";round(7,10,c.w-14,22,5);ctx.fill();
+  ctx.fillStyle="#25343b";round(8,44,c.w-16,20,5);ctx.fill();
+  ctx.fillStyle="#111";
+  ctx.fillRect(-5,13,7,20);ctx.fillRect(c.w-2,13,7,20);
+  ctx.fillRect(-5,50,7,20);ctx.fillRect(c.w-2,50,7,20);
+  ctx.fillStyle="#fff2b8";ctx.fillRect(6,2,11,4);ctx.fillRect(c.w-17,2,11,4);
+  ctx.restore();
+}
+function round(x,y,w,h,r){
+  ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();
+}
+
+function loop(t){
+  if(!running)return;
+  const dt=Math.min(40,t-last);last=t;
+  update(dt);draw();
+  if(running)requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
